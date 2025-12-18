@@ -14,6 +14,11 @@ export default function MediaViewerScreen({ route, navigation }) {
     navigation.goBack();
   };
 
+  const handleEdit = () => {
+    console.log('✏️  Edit button pressed for photo:', uri);
+    navigation.navigate('PhotoEdit', { uri });
+  };
+
   return (
     <View style={styles.container}>
       {/* Close button */}
@@ -23,6 +28,17 @@ export default function MediaViewerScreen({ route, navigation }) {
       >
         <Text style={styles.closeIcon}>✕</Text>
       </TouchableOpacity>
+
+      {/* Edit button - Only show for photos */}
+      {type === 'photo' && (
+        <TouchableOpacity 
+          style={styles.editButton}
+          onPress={handleEdit}
+        >
+          <Text style={styles.editIcon}>✏️</Text>
+          <Text style={styles.editText}>Edit</Text>
+        </TouchableOpacity>
+      )}
 
       {/* Media content */}
       {type === 'photo' ? (
@@ -68,6 +84,32 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 24,
     fontWeight: 'bold',
+  },
+  editButton: {
+    position: 'absolute',
+    bottom: 40,
+    alignSelf: 'center',
+    zIndex: 10,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 25,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  editIcon: {
+    fontSize: 18,
+    marginRight: 6,
+  },
+  editText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
   },
   image: {
     width: SCREEN_WIDTH,

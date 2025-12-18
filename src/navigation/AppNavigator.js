@@ -6,6 +6,7 @@ import EditProfileScreen from '../screens/EditProfileScreen';
 import CameraScreen from '../screens/CameraScreen';
 import GalleryScreen from '../screens/GalleryScreen';
 import MediaViewerScreen from '../screens/MediaViewerScreen';
+import PhotoEditScreen from '../screens/PhotoEditScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -56,6 +57,14 @@ export default function AppNavigator() {
             presentation: 'fullScreenModal',
           }}
         />
+        <Stack.Screen 
+          name="PhotoEdit" 
+          component={PhotoEditScreen}
+          options={{ 
+            headerShown: false,
+            presentation: 'modal',
+          }}
+/>
       </Stack.Navigator>
     </NavigationContainer>
   );
