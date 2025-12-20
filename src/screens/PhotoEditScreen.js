@@ -7,31 +7,42 @@ import {
   Alert,
   ActivityIndicator,
   Dimensions,
-  Modal,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { colors } from '../styles/colors';
 import * as imageService from '../services/imageService';
 import * as storageService from '../services/storageService';
+import * as cropMath from '../utils/cropMath';
+import CropOverlay from '../components/CropOverlay';
+import CropToolbar from '../components/CropToolbar';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+// Padding around image in crop mode (makes handles easier to grab)
+const CROP_PADDING = 24;
 
 export default function PhotoEditScreen({ route, navigation }) {
   const { uri: originalUri } = route.params;
   
-  // State
+  // Basic state
   const [currentUri, setCurrentUri] = useState(originalUri);
   const [editHistory, setEditHistory] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
-  const [showCropMenu, setShowCropMenu] = useState(false);
   const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
+  const [displayDimensions, setDisplayDimensions] = useState({ width: 0, height: 0 });
   
-  // Track current transformations (for visual preview)
+  // Transform state (for visual preview)
   const [rotation, setRotation] = useState(0);
-  const [flipH, setFlipH] = useState(1); // 1 = normal, -1 = flipped
-  const [flipV, setFlipV] = useState(1); // 1 = normal, -1 = flipped
+  const [flipH, setFlipH] = useState(1);
+  const [flipV, setFlipV] = useState(1);
   const [cropApplied, setCropApplied] = useState(false);
-
+  
+  // Crop mode state
+  const [isCropMode, setIsCropMode] = useState(false);
+  const [cropBounds, setCropBounds] = useState(null);
+  const [selectedAspectRatio, setSelectedAspectRatio] = useState('free');
+  
   useEffect(() => {
     console.log('📸 PhotoEditScreen opened with image:', originalUri);
   }, []);
@@ -43,6 +54,22 @@ export default function PhotoEditScreen({ route, navigation }) {
     const { width, height } = event.source;
     console.log('📐 Image dimensions:', width, 'x', height);
     setImageDimensions({ width, height });
+    
+    // Calculate display dimensions (maintaining aspect ratio)
+    // In crop mode, leave padding around the image for easier handle access
+    const imageRatio = width / height;
+    const maxWidth = SCREEN_WIDTH - (CROP_PADDING * 2); // Padding on left and right
+    const maxHeight = SCREEN_HEIGHT * 0.6 - (CROP_PADDING * 2); // Padding on top and bottom
+    
+    let displayWidth = maxWidth;
+    let displayHeight = displayWidth / imageRatio;
+    
+    if (displayHeight > maxHeight) {
+      displayHeight = maxHeight;
+      displayWidth = displayHeight * imageRatio;
+    }
+    
+    setDisplayDimensions({ width: displayWidth, height: displayHeight });
   };
 
   /**
@@ -72,10 +99,8 @@ export default function PhotoEditScreen({ route, navigation }) {
     console.log('🔄 Flip horizontal pressed');
     
     try {
-      // Toggle flip state for visual preview
       setFlipH(prev => prev * -1);
       
-      // Add to edit history
       const flipType = 'horizontal';
       setEditHistory(prev => [...prev, { flip: flipType }]);
       
@@ -93,10 +118,8 @@ export default function PhotoEditScreen({ route, navigation }) {
     console.log('🔄 Flip vertical pressed');
     
     try {
-      // Toggle flip state for visual preview
       setFlipV(prev => prev * -1);
       
-      // Add to edit history
       const flipType = 'vertical';
       setEditHistory(prev => [...prev, { flip: flipType }]);
       
@@ -108,56 +131,147 @@ export default function PhotoEditScreen({ route, navigation }) {
   };
 
   /**
-   * Show crop aspect ratio menu
+   * Enter crop mode
    */
   const handleCropPress = () => {
     if (imageDimensions.width === 0 || imageDimensions.height === 0) {
       Alert.alert('Please Wait', 'Image is still loading...');
       return;
     }
-    setShowCropMenu(true);
-  };
-
-  /**
-   * Apply crop with selected aspect ratio
-   */
-  const handleCropSelect = async (aspectRatio) => {
-    console.log('✂️  Crop selected:', aspectRatio);
-    setShowCropMenu(false);
     
-    if (aspectRatio === 'original') {
-      console.log('ℹ️  Original aspect ratio selected - no crop needed');
+    if (displayDimensions.width === 0 || displayDimensions.height === 0) {
+      Alert.alert('Please Wait', 'Display is still calculating...');
       return;
     }
     
+    console.log('🔲 Entering crop mode');
+    console.log('📐 Display dimensions:', displayDimensions);
+    
+    // Initialize crop bounds to full image
+    const initialBounds = cropMath.initializeCropBounds(
+      displayDimensions.width,
+      displayDimensions.height,
+      null // Start with free form
+    );
+    
+    console.log('📐 Initial crop bounds:', initialBounds);
+    
+    setCropBounds(initialBounds);
+    setSelectedAspectRatio('free');
+    setIsCropMode(true);
+  };
+
+  /**
+   * Handle crop bounds change from CropOverlay
+   */
+  const handleCropBoundsChange = (newBounds) => {
+    console.log('🔄 handleCropBoundsChange called with:', newBounds);
+    
+    if (!newBounds || typeof newBounds.x !== 'number' || isNaN(newBounds.x)) {
+      console.error('❌ Invalid bounds in handleCropBoundsChange:', newBounds);
+      console.error('❌ Stack trace:', new Error().stack);
+      return; // Don't update with invalid bounds
+    }
+    
+    console.log('✅ Setting crop bounds to:', newBounds);
+    setCropBounds(newBounds);
+  };
+
+  /**
+   * Handle aspect ratio change
+   */
+  const handleAspectRatioChange = (ratioKey) => {
+    console.log('📐 Aspect ratio changed:', ratioKey);
+    console.log('📐 Current cropBounds:', cropBounds);
+    console.log('📐 Display dimensions:', displayDimensions);
+    console.log('📐 Setting selectedAspectRatio to:', ratioKey);
+    
     try {
-      const cropData = imageService.calculateCropDimensions(
+      setSelectedAspectRatio(ratioKey);
+      console.log('✅ Aspect ratio state updated');
+    } catch (error) {
+      console.error('❌ Error setting aspect ratio:', error);
+    }
+  };
+
+  /**
+   * Reset crop to full image
+   */
+  const handleCropReset = () => {
+    console.log('🔄 Reset button pressed');
+    console.log('🔄 Current displayDimensions:', displayDimensions);
+    console.log('🔄 Current selectedAspectRatio:', selectedAspectRatio);
+    console.log('🔄 Current cropBounds:', cropBounds);
+    
+    const fullBounds = cropMath.initializeCropBounds(
+      displayDimensions.width,
+      displayDimensions.height,
+      cropMath.ASPECT_RATIOS[selectedAspectRatio]?.ratio
+    );
+    
+    console.log('🔄 Calculated fullBounds:', fullBounds);
+    setCropBounds(fullBounds);
+    console.log('✅ Reset complete - new bounds set');
+  };
+
+  /**
+   * Cancel crop mode
+   */
+  const handleCropCancel = () => {
+    console.log('🚫 Canceling crop mode');
+    setIsCropMode(false);
+    setCropBounds(null);
+    setSelectedAspectRatio('free');
+  };
+
+  /**
+   * Apply crop
+   */
+  const handleCropApply = async () => {
+    if (!cropBounds) {
+      Alert.alert('Error', 'No crop area selected');
+      return;
+    }
+    
+    console.log('✂️ Applying crop with bounds:', cropBounds);
+    setIsSaving(true);
+    
+    try {
+      // Convert screen coordinates to image coordinates
+      const cropAction = cropMath.calculateCropAction(
+        cropBounds,
         imageDimensions.width,
         imageDimensions.height,
-        aspectRatio
+        displayDimensions.width,
+        displayDimensions.height
       );
       
-      // Apply crop immediately for visual preview
-      console.log('✂️  Applying crop for preview...');
-      const croppedUri = await imageService.cropImage(currentUri, cropData);
+      console.log('✂️ Crop action:', cropAction);
       
-      // Update current display
+      // Apply crop to image
+      const croppedUri = await imageService.cropImage(currentUri, cropAction);
+      
+      // Update display
       setCurrentUri(croppedUri);
-      
-      // Add to edit history
-      setEditHistory(prev => [...prev, { crop: cropData }]);
+      setEditHistory(prev => [...prev, { crop: cropAction }]);
       setCropApplied(true);
       
-      // Update dimensions for next crop (if any)
+      // Update dimensions for future operations
       setImageDimensions({
-        width: cropData.width,
-        height: cropData.height,
+        width: cropAction.width,
+        height: cropAction.height,
       });
       
-      console.log('✅ Crop applied and queued:', aspectRatio);
+      // Exit crop mode
+      setIsCropMode(false);
+      setCropBounds(null);
+      
+      console.log('✅ Crop applied successfully');
     } catch (error) {
       console.error('❌ Error applying crop:', error);
-      Alert.alert('Error', 'Failed to crop image');
+      Alert.alert('Error', 'Failed to crop image. Please try again.');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -187,6 +301,41 @@ export default function PhotoEditScreen({ route, navigation }) {
   };
 
   /**
+   * Reset all edits back to original
+   */
+  const handleReset = () => {
+    if (editHistory.length === 0 && !cropApplied && rotation === 0 && flipH === 1 && flipV === 1) {
+      // Nothing to reset
+      Alert.alert('No Edits', 'Image is already in its original state.');
+      return;
+    }
+
+    Alert.alert(
+      'Reset to Original?',
+      'All edits will be discarded and the image will return to its original state.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Reset', 
+          style: 'destructive', 
+          onPress: () => {
+            console.log('🔄 Resetting all edits to original');
+            setCurrentUri(originalUri);
+            setRotation(0);
+            setFlipH(1);
+            setFlipV(1);
+            setEditHistory([]);
+            setCropApplied(false);
+            
+            // Image dimensions will reload when image loads
+            console.log('✅ Reset complete');
+          }
+        },
+      ]
+    );
+  };
+
+  /**
    * Save edited image
    */
   const handleSave = async () => {
@@ -197,7 +346,7 @@ export default function PhotoEditScreen({ route, navigation }) {
 
     console.log('💾 Saving edited image...');
     console.log('📝 Edit history:', editHistory);
-    console.log('✂️  Crop applied:', cropApplied);
+    console.log('✂️ Crop applied:', cropApplied);
     setIsSaving(true);
 
     try {
@@ -212,7 +361,7 @@ export default function PhotoEditScreen({ route, navigation }) {
           console.log('🎨 Applying remaining edits to cropped image:', remainingEdits.length);
           editedUri = await imageService.applyEdits(currentUri, remainingEdits);
         } else {
-          console.log('ℹ️  No additional edits, using cropped image');
+          console.log('ℹ️ No additional edits, using cropped image');
           editedUri = currentUri;
         }
       } else {
@@ -250,171 +399,183 @@ export default function PhotoEditScreen({ route, navigation }) {
   };
 
   return (
-    <View style={styles.container}>
-      {/* Image Display */}
-      <View style={styles.imageContainer}>
-        <Image
-          source={{ uri: currentUri }}
-          style={[
-            styles.image,
-            { 
-              transform: [
-                { rotate: `${rotation}deg` },
-                { scaleX: flipH },
-                { scaleY: flipV },
-              ]
-            }
-          ]}
-          contentFit="contain"
-          onLoad={handleImageLoad}
-        />
-        
-        {/* Edit count badge */}
-        {(editHistory.length > 0 || cropApplied) && (
-          <View style={styles.editBadge}>
-            <Text style={styles.editBadgeText}>
-              {editHistory.length + (cropApplied ? 1 : 0)} {(editHistory.length + (cropApplied ? 1 : 0)) === 1 ? 'edit' : 'edits'}
-            </Text>
-          </View>
-        )}
-      </View>
-
-      {/* Toolbar */}
-      <View style={styles.toolbar}>
-        {/* Top row: Edit tools */}
-        <View style={styles.toolRow}>
-          <TouchableOpacity 
-            style={styles.tool}
-            onPress={handleRotate}
-            disabled={isSaving}
-          >
-            <Text style={styles.toolIcon}>🔄</Text>
-            <Text style={styles.toolLabel}>Rotate</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.tool}
-            onPress={handleFlipHorizontal}
-            disabled={isSaving}
-          >
-            <Text style={styles.toolIcon}>↔️</Text>
-            <Text style={styles.toolLabel}>Flip H</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.tool}
-            onPress={handleFlipVertical}
-            disabled={isSaving}
-          >
-            <Text style={styles.toolIcon}>↕️</Text>
-            <Text style={styles.toolLabel}>Flip V</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.tool}
-            onPress={handleCropPress}
-            disabled={isSaving}
-          >
-            <Text style={styles.toolIcon}>✂️</Text>
-            <Text style={styles.toolLabel}>Crop</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Bottom row: Actions */}
-        <View style={styles.actionRow}>
-          <TouchableOpacity 
-            style={[styles.button, styles.cancelButton]}
-            onPress={handleCancel}
-            disabled={isSaving}
-          >
-            <Text style={styles.cancelButtonText}>Cancel</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={[styles.button, styles.saveButton]}
-            onPress={handleSave}
-            disabled={isSaving}
-          >
-            {isSaving ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.saveButtonText}>Save</Text>
-            )}
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* Crop Aspect Ratio Menu */}
-      <Modal
-        visible={showCropMenu}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowCropMenu(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.cropMenu}>
-            <Text style={styles.cropMenuTitle}>Select Aspect Ratio</Text>
+    <GestureHandlerRootView style={styles.container}>
+      {!isCropMode ? (
+        // Normal edit mode
+        <View style={styles.container}>
+          {/* Image Display */}
+          <View style={styles.imageContainer}>
+            <Image
+              source={{ uri: currentUri }}
+              style={[
+                styles.image,
+                { 
+                  transform: [
+                    { rotate: `${rotation}deg` },
+                    { scaleX: flipH },
+                    { scaleY: flipV },
+                  ]
+                }
+              ]}
+              contentFit="contain"
+              onLoad={handleImageLoad}
+            />
             
-            <TouchableOpacity 
-              style={styles.cropOption}
-              onPress={() => handleCropSelect('original')}
-            >
-              <Text style={styles.cropOptionText}>Original</Text>
-            </TouchableOpacity>
+            {/* Edit count badge */}
+            {(editHistory.length > 0 || cropApplied) && (
+              <View style={styles.editBadge}>
+                <Text style={styles.editBadgeText}>
+                  {editHistory.length + (cropApplied ? 1 : 0)} {(editHistory.length + (cropApplied ? 1 : 0)) === 1 ? 'edit' : 'edits'}
+                </Text>
+              </View>
+            )}
+          </View>
 
-            <TouchableOpacity 
-              style={styles.cropOption}
-              onPress={() => handleCropSelect('square')}
-            >
-              <Text style={styles.cropOptionText}>Square (1:1)</Text>
-            </TouchableOpacity>
+          {/* Toolbar */}
+          <View style={styles.toolbar}>
+            {/* Top row: Edit tools */}
+            <View style={styles.toolRow}>
+              <TouchableOpacity 
+                style={styles.tool}
+                onPress={handleRotate}
+                disabled={isSaving}
+              >
+                <Text style={styles.toolIcon}>🔄</Text>
+                <Text style={styles.toolLabel}>Rotate</Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity 
-              style={styles.cropOption}
-              onPress={() => handleCropSelect('16:9')}
-            >
-              <Text style={styles.cropOptionText}>Widescreen (16:9)</Text>
-            </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.tool}
+                onPress={handleFlipHorizontal}
+                disabled={isSaving}
+              >
+                <Text style={styles.toolIcon}>↔️</Text>
+                <Text style={styles.toolLabel}>Flip H</Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity 
-              style={styles.cropOption}
-              onPress={() => handleCropSelect('4:3')}
-            >
-              <Text style={styles.cropOptionText}>Standard (4:3)</Text>
-            </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.tool}
+                onPress={handleFlipVertical}
+                disabled={isSaving}
+              >
+                <Text style={styles.toolIcon}>↕️</Text>
+                <Text style={styles.toolLabel}>Flip V</Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity 
-              style={[styles.cropOption, styles.cropCancel]}
-              onPress={() => setShowCropMenu(false)}
-            >
-              <Text style={[styles.cropOptionText, styles.cropCancelText]}>Cancel</Text>
-            </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.tool}
+                onPress={handleCropPress}
+                disabled={isSaving}
+              >
+                <Text style={styles.toolIcon}>✂️</Text>
+                <Text style={styles.toolLabel}>Crop</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Bottom row: Actions */}
+            <View style={styles.actionRow}>
+              <TouchableOpacity 
+                style={[styles.button, styles.cancelButton]}
+                onPress={handleCancel}
+                disabled={isSaving}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={[styles.button, styles.resetButton]}
+                onPress={handleReset}
+                disabled={isSaving}
+              >
+                <Text style={styles.resetButtonText}>Reset</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={[styles.button, styles.saveButton]}
+                onPress={handleSave}
+                disabled={isSaving}
+              >
+                {isSaving ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.saveButtonText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
-      </Modal>
-    </View>
+      ) : (
+        // Crop mode
+        <View style={styles.container}>
+          {/* Image with crop overlay */}
+          <View style={styles.cropContainer}>
+            <View 
+              style={[styles.imageWrapper, { 
+                width: displayDimensions.width,
+                height: displayDimensions.height,
+              }]}
+            >
+              <Image
+                source={{ uri: currentUri }}
+                style={[
+                  styles.cropImage,
+                  { 
+                    width: displayDimensions.width,
+                    height: displayDimensions.height,
+                  }
+                ]}
+                contentFit="contain"
+              />
+              
+              {cropBounds && (
+                <CropOverlay
+                  imageWidth={imageDimensions.width}
+                  imageHeight={imageDimensions.height}
+                  displayDimensions={displayDimensions}
+                  initialBounds={cropBounds}
+                  onBoundsChange={handleCropBoundsChange}
+                  selectedAspectRatio={selectedAspectRatio}
+                  enabled={!isSaving}
+                />
+              )}
+            </View>
+          </View>
+          
+          {/* Crop toolbar */}
+          <CropToolbar
+            selectedRatio={selectedAspectRatio}
+            onRatioChange={handleAspectRatioChange}
+            onReset={handleCropReset}
+            onCancel={handleCropCancel}
+            onApply={handleCropApply}
+            disabled={isSaving}
+          />
+        </View>
+      )}
+    </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000',
+    backgroundColor: colors.background,
   },
   imageContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#000000',
   },
   image: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT * 0.7,
+    width: '100%',
+    height: '100%',
   },
   editBadge: {
     position: 'absolute',
-    top: 50,
-    left: 20,
-    backgroundColor: 'rgba(0, 122, 255, 0.9)',
+    top: 20,
+    right: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 12,
@@ -425,50 +586,64 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   toolbar: {
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    backgroundColor: colors.surface,
     paddingBottom: 20,
-    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
   },
   toolRow: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    paddingVertical: 15,
+    paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    borderBottomColor: colors.border,
   },
   tool: {
     alignItems: 'center',
-    paddingHorizontal: 10,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
   },
   toolIcon: {
     fontSize: 28,
     marginBottom: 4,
   },
   toolLabel: {
-    color: '#FFFFFF',
-    fontSize: 11,
+    fontSize: 12,
+    color: colors.text,
     fontWeight: '500',
   },
   actionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 15,
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    gap: 12,
   },
   button: {
     flex: 1,
     paddingVertical: 14,
     borderRadius: 8,
     alignItems: 'center',
-    marginHorizontal: 5,
+    justifyContent: 'center',
   },
   cancelButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: colors.background,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
+    borderColor: colors.border,
   },
   cancelButtonText: {
-    color: '#FFFFFF',
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  resetButton: {
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  resetButtonText: {
+    color: colors.text,
     fontSize: 16,
     fontWeight: '600',
   },
@@ -480,43 +655,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  // Modal styles
-  modalOverlay: {
+  cropContainer: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000000',
   },
-  cropMenu: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingTop: 20,
-    paddingBottom: 40,
+  imageWrapper: {
+    position: 'relative',
   },
-  cropMenuTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    textAlign: 'center',
-    marginBottom: 10,
-    color: colors.text,
-  },
-  cropOption: {
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#EEEEEE',
-  },
-  cropOptionText: {
-    fontSize: 16,
-    color: colors.text,
-    textAlign: 'center',
-  },
-  cropCancel: {
-    borderBottomWidth: 0,
-    marginTop: 10,
-  },
-  cropCancelText: {
-    color: '#FF3B30',
-    fontWeight: '600',
+  cropImage: {
+    width: '100%',
+    height: '100%',
   },
 });
