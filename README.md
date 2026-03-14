@@ -51,9 +51,6 @@ npm run android
 
 # Run on iOS
 npm run ios
-
-# Run in browser (limited camera/gallery functionality)
-npm run web
 ```
 
 ## Project Structure
