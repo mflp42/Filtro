@@ -4,13 +4,13 @@ A React Native mobile app for capturing photos, applying color filters, and savi
 
 ## Features
 
-- 📷 In-app camera capture with zoom support
-- 🖼️ Device gallery browsing and image selection
-- ✂️ Crop tool with handles and overlay UI
-- 🎨 Photo editing with color matrix filters
-- 🔍 Zoomable image viewer
-- 👤 User profile screen
-- 💾 Save processed images to media library
+- In-app camera capture with zoom support
+- Device gallery browsing and image selection
+- Crop tool with handles and overlay UI
+- Photo editing with color matrix filters
+- Zoomable image viewer
+- User profile screen
+- Save processed images to media library
 
 ## Tech Stack
 
