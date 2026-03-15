@@ -1,6 +1,6 @@
 # Filtro
 
-A React Native mobile app for capturing photos, applying color filters, and saving to your device gallery — built with Expo.
+A React Native mobile app for capturing photos and videos, applying color filters, and saving to your device gallery — built with Expo.
 
 ## Features
 
